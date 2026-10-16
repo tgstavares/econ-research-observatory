@@ -103,7 +103,13 @@ def export_snapshot(source, destination, *, rankings_sha, published_on=None):
             connection.commit()
             if connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok" or connection.execute("PRAGMA foreign_key_check").fetchall():
                 raise ValueError("Public snapshot integrity validation failed.")
-        destination.write_bytes(staged.read_bytes())
+        with tempfile.NamedTemporaryFile(dir=destination.parent, prefix=".public-", suffix=".sqlite", delete=False) as pending:
+            pending.write(staged.read_bytes())
+            pending_path = Path(pending.name)
+        try:
+            pending_path.replace(destination)
+        finally:
+            pending_path.unlink(missing_ok=True)
     return dict(version=1, published_on=published_on or dt.date.today().isoformat(), ranking_date="2026-10-14",
         ranking_sha256=rankings_sha, database_sha256=hashlib.sha256(destination.read_bytes()).hexdigest(),
         metrics=PUBLIC_METRICS, withheld_metrics=["jcr.ais", "abs.rating", "abdc.rating"],

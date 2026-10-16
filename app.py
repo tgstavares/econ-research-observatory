@@ -374,7 +374,14 @@ def researcher_page():
                 hide_index=True, width="stretch", column_config={"source_url":st.column_config.LinkColumn("Source")})
             st.json([json.loads(c["evidence_json"]) for c in claims], expanded=False)
         else:
-            st.info("Collect this researcher's public records to retrieve ORCID, OpenAlex and available RePEc evidence.")
+            if PUBLIC_MODE:
+                if person["profile_url"]:
+                    st.markdown(f"[Official researcher profile]({person['profile_url']})")
+                if person["orcid"]:
+                    st.markdown(f"[Public ORCID record](https://orcid.org/{person['orcid']})")
+                st.caption("Membership status reflects the source directory and the reviews saved in this snapshot.")
+            else:
+                st.info("Collect this researcher's public records to retrieve ORCID, OpenAlex and available RePEc evidence.")
     assessments = store.latest_assessments(researcher_id=researcher_id, rankings_sha=snapshot_hash,
         year_policy="bibliographic", unrestricted=True)
     if not assessments:
