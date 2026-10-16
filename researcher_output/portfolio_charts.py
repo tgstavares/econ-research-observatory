@@ -36,7 +36,7 @@ def annual_group_output(comparisons, metric, names):
 def group_color_encoding(groups, colors):
     return {"field":"group", "type":"nominal", "title":"Group",
         "scale":{"domain":groups, "range":[colors[group] for group in groups]},
-        "legend":{"orient":"bottom", "title":None}}
+        "legend":{"orient":"bottom", "title":"", "symbolType":"stroke"}}
 
 
 def annual_output(comparison, metric):
