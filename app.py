@@ -56,7 +56,7 @@ if PUBLIC_MODE:
     else:
         store = PublishedCatalog(snapshot_path)
     snapshot_hash = public_manifest["ranking_sha256"]
-    edition = "Private read-only snapshot" if SHOW_AIS else "Public snapshot"
+    edition = "Hosted read-only snapshot"
     st.caption(f"{edition} · {public_manifest['published_on']} · Publications and RePEc recursive IF (all-period)" +
         (" · JCR AIS 2025" if SHOW_AIS else ""))
 else:
@@ -683,8 +683,8 @@ def methodology_page():
         st.write("AIS means the JCR Article Influence Score, using the fixed 2025 edition. Full AIS sums the "
             "journal's score for each included paper; fractional AIS divides it by the number of authors. "
             "Institution totals use the same deduplication and author shares as RePEc IF. Missing AIS stays missing.")
-        st.caption("AIS observations are loaded separately for private use and are absent from the public GitHub snapshot. "
-            "Access to this hosted app is restricted through Streamlit sharing settings. ABS and ABDC grades remain in the local workspace.")
+        st.caption("AIS observations are loaded separately and are absent from the public GitHub snapshot. "
+            "Their values and derived scores are visible to this app's viewers. ABS and ABDC grades remain in the local workspace.")
     else:
         st.caption("This public edition publishes counts and RePEc measures. AIS, ABS and ABDC data and their derived "
             "scores remain outside the public snapshot pending confirmation of redistribution permissions.")
@@ -714,8 +714,7 @@ with st.sidebar:
         key="workspace_page", label_visibility="collapsed", on_change=clear_profile_route)
     st.divider()
     st.caption(f"{len(people)} researcher identities · {len(organizations)} organizations")
-    st.caption("Current affiliation attribution\n\n" + ("Private read-only snapshot" if PUBLIC_MODE and SHOW_AIS else
-        "Public read-only snapshot" if PUBLIC_MODE else "Private local workspace"))
+    st.caption("Current affiliation attribution\n\n" + ("Hosted read-only snapshot" if PUBLIC_MODE else "Private local workspace"))
 
 {"Compare":comparison_page,"Researchers":researcher_page,"Memberships":memberships_page,
  "Collect & import":collect_page,"Journals":journals_page,"Methodology & sources":methodology_page}[page]()
