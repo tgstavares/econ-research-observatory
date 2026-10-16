@@ -20,8 +20,10 @@ from researcher_output.coverage import publication_coverage, coverage_rows
 from researcher_output.portfolio_charts import COMPARISON_METRICS, GROUP_COLORS, annual_group_output, lorenz_curve, annual_spec, lorenz_spec
 from researcher_output.group_comparison import comparison_researchers, comparison_overlap
 from researcher_output.publishing import PublishedCatalog, public_export
+from researcher_output.private_metrics import AIS_SECRET, PrivateAisCatalog
 
 PUBLIC_MODE = os.environ.get("ECON_RANKINGS_PUBLIC", "0") == "1"
+SHOW_AIS = not PUBLIC_MODE
 if not PUBLIC_MODE:
     from researcher_output.workflows import run_and_import, review_publication
 
@@ -36,9 +38,27 @@ st.html("""<style>.block-container{padding-top:2.6rem;max-width:1440px}h1{letter
 </style>""")
 if PUBLIC_MODE:
     public_manifest = json.loads(Path(os.environ.get("ECON_RANKINGS_PUBLIC_MANIFEST", ROOT / "data/manifest.json")).read_text())
-    store = PublishedCatalog(os.environ.get("ECON_RANKINGS_DATABASE", ROOT / "data/public.sqlite"))
+    snapshot_path = os.environ.get("ECON_RANKINGS_DATABASE", ROOT / "data/public.sqlite")
+    try:
+        ais_secret = st.secrets.get(AIS_SECRET)
+    except FileNotFoundError:
+        ais_secret = None
+    if ais_secret:
+        @st.cache_resource(show_spinner=False)
+        def private_hosted_catalog(path, payload_json, snapshot_sha256):
+            return PrivateAisCatalog(path, json.loads(payload_json))
+        try:
+            store = private_hosted_catalog(snapshot_path, ais_secret, public_manifest["database_sha256"])
+        except (ValueError, TypeError, json.JSONDecodeError) as error:
+            st.error(str(error))
+            st.stop()
+        SHOW_AIS = True
+    else:
+        store = PublishedCatalog(snapshot_path)
     snapshot_hash = public_manifest["ranking_sha256"]
-    st.caption(f"Public snapshot · {public_manifest['published_on']} · Publications and RePEc recursive IF (all-period)")
+    edition = "Private read-only snapshot" if SHOW_AIS else "Public snapshot"
+    st.caption(f"{edition} · {public_manifest['published_on']} · Publications and RePEc recursive IF (all-period)" +
+        (" · JCR AIS 2025" if SHOW_AIS else ""))
 else:
     store = ResearcherCatalog(os.environ.get("ECON_RANKINGS_DATABASE", DEFAULT_DATABASE))
     if os.environ.get("ECON_RANKINGS_BOOTSTRAP", "1") != "0":
@@ -130,16 +150,16 @@ def portfolio_summary_rows(summary):
             "Per member":number(summary["ais_per_member"]),
             "Fractional/member":number(summary["fractional_ais_per_member"])},
     ]
-    return rows[:2] if PUBLIC_MODE else rows
+    return rows if SHOW_AIS else rows[:2]
 
 
 def comparison_coverage(summary):
     coverage = f"IF coverage: {summary['recursive_coverage']}/{summary['unique_publications'] or 0} unique papers."
-    if not PUBLIC_MODE:
+    if SHOW_AIS:
         coverage += f" AIS coverage: {summary['ais_coverage']}/{summary['unique_publications'] or 0} unique papers."
     if summary["fractional_coverage"] != summary["recursive_coverage"]:
         coverage += f" Fractional IF coverage: {summary['fractional_coverage']}/{summary['unique_publications'] or 0}."
-    if not PUBLIC_MODE and summary["fractional_ais_coverage"] != summary["ais_coverage"]:
+    if SHOW_AIS and summary["fractional_ais_coverage"] != summary["ais_coverage"]:
         coverage += f" Fractional AIS coverage: {summary['fractional_ais_coverage']}/{summary['unique_publications'] or 0}."
     return coverage
 
@@ -212,7 +232,7 @@ def comparison_page():
         st.table(pd.DataFrame(portfolio), hide_index=True, border="horizontal", width="stretch")
     st.caption("Totals count each shared paper once within each group. Fractional totals sum selected members' shares "
         "(1 ÷ number of authors). Per-member figures divide by all selected current members." +
-        (" AIS = Article Influence Score." if not PUBLIC_MODE else ""))
+        (" AIS = Article Influence Score." if SHOW_AIS else ""))
     overlap = comparison_overlap(comparisons)
     if multiple:
         shared_people = overlap["researchers_in_multiple_groups"]
@@ -251,7 +271,7 @@ def comparison_page():
     if not researchers:
         st.info("No current members match these filters. Change the categories or review memberships.")
         return
-    metrics = [metric for metric in COMPARISON_METRICS if not PUBLIC_MODE or "AIS" not in metric]
+    metrics = [metric for metric in COMPARISON_METRICS if SHOW_AIS or "AIS" not in metric]
     sort_by = st.radio("Order researchers by", metrics, horizontal=True)
     score_key = COMPARISON_METRICS[sort_by]["researcher"]
     rows = sorted(researchers, key=lambda r: (r[score_key] is None, -(r[score_key] or 0), r["name"]))
@@ -266,7 +286,7 @@ def comparison_page():
         "Needs review":r["review_cases"], "Records as of":r["assessment_as_of"],
         "Membership":" · ".join((org_names[m["organization_id"]] + ": " if multiple else "") +
             STATUS_LABELS[m["membership_status"]] for m in r["group_memberships"])} for r in rows])
-    if PUBLIC_MODE:
+    if not SHOW_AIS:
         display = display.drop(columns=["Sum AIS", "Fractional AIS", "AIS coverage"])
     display["Papers"] = display["Papers"].astype("Int64")
     profile_links = ["?" + urlencode({"researcher":r["researcher_id"]}) for r in rows]
@@ -322,7 +342,7 @@ def comparison_page():
     export = dict(version=1, groups=comparisons,
         group_names={i:org_names[i] for i in organization_ids}, overlap=overlap) if multiple else comparisons[organization_ids[0]]
     if PUBLIC_MODE:
-        export = public_export(export)
+        export = public_export(export, include_ais=SHOW_AIS)
     filename = "_".join(organization_ids)
     col1.download_button("Download comparison JSON", json.dumps(export, ensure_ascii=False, indent=2),
         file_name=f"{filename}_comparison.json", mime="application/json")
@@ -399,15 +419,15 @@ def researcher_page():
         {"Measure":"JCR AIS · 2025", "Total":number(summary["ais_sum"]),
             "Fractional total":number(summary["fractional_ais_sum"])},
     ])
-    if PUBLIC_MODE:
+    if not SHOW_AIS:
         portfolio = portfolio.iloc[:2]
     with st.container(key="portfolio_summary"):
         st.table(portfolio, hide_index=True, border="horizontal", width="stretch")
-    st.caption("Included journal papers. Fractional totals divide each paper's count or IF by its number of authors." if PUBLIC_MODE else
+    st.caption("Included journal papers. Fractional totals divide each paper's count or IF by its number of authors." if not SHOW_AIS else
         "Included journal papers. Fractional totals divide each paper's count, IF or AIS by its number of authors. AIS = Article Influence Score.")
     coverage = (f"Records as of {bundle['as_of']}. RePEc IF coverage {summary['repec_recursive_if_all_coverage']}/{summary['publications']}; "
         f"fractional {summary['fractional_repec_recursive_if_all_coverage']}/{summary['publications']}.")
-    if not PUBLIC_MODE:
+    if SHOW_AIS:
         coverage += (f" AIS coverage {summary['ais_coverage']}/{summary['publications']}; "
             f"fractional {summary['fractional_ais_coverage']}/{summary['publications']}.")
     st.caption(coverage)
@@ -437,7 +457,7 @@ def researcher_page():
             "Available" if p["repec_recursive_if_all"] is not None else "Journal link requires review")}
         for p in selected_publications])
     if PUBLIC_MODE:
-        display = display.drop(columns=["AIS", "Fractional AIS", "ABS", "ABDC"], errors="ignore")
+        display = display.drop(columns=["ABS", "ABDC"] + ([] if SHOW_AIS else ["AIS", "Fractional AIS"]), errors="ignore")
     st.dataframe(display, hide_index=True, width="stretch",
         column_config={"Journal":st.column_config.TextColumn(width="medium"),
             "Recursive IF":st.column_config.NumberColumn(help="RePEc recursive impact factor, all-period."),
@@ -451,7 +471,7 @@ def researcher_page():
     elif not PUBLIC_MODE:
         publication_review(person, bundle)
     st.download_button("Download researcher snapshot" if PUBLIC_MODE else "Download full researcher assessment",
-        json.dumps(public_export(bundle) if PUBLIC_MODE else bundle, ensure_ascii=False, indent=2),
+        json.dumps(public_export(bundle, include_ais=SHOW_AIS) if PUBLIC_MODE else bundle, ensure_ascii=False, indent=2),
         file_name=f"{bundle['orcid']}_assessment.json", mime="application/json")
 
 
@@ -659,8 +679,15 @@ def methodology_page():
         "scores, including zeros, and normalize each group separately. Full-count coauthorship can therefore make "
         "the sum of individual scores exceed the institution's full-count total. Scores support exploration and "
         "should be read alongside the publications themselves.")
-    st.caption("This public edition publishes counts and RePEc measures. AIS, ABS and ABDC data and their derived "
-        "scores remain outside the public snapshot pending confirmation of redistribution permissions.")
+    if SHOW_AIS:
+        st.write("AIS means the JCR Article Influence Score, using the fixed 2025 edition. Full AIS sums the "
+            "journal's score for each included paper; fractional AIS divides it by the number of authors. "
+            "Institution totals use the same deduplication and author shares as RePEc IF. Missing AIS stays missing.")
+        st.caption("AIS observations are loaded separately for private use and are absent from the public GitHub snapshot. "
+            "Access to this hosted app is restricted through Streamlit sharing settings. ABS and ABDC grades remain in the local workspace.")
+    else:
+        st.caption("This public edition publishes counts and RePEc measures. AIS, ABS and ABDC data and their derived "
+            "scores remain outside the public snapshot pending confirmation of redistribution permissions.")
     for label, url in (("RePEc journal factors", "https://ideas.repec.org/top/top.journals.recurse.html"),
             ("ORCID", "https://orcid.org/"), ("Crossref", "https://www.crossref.org/"),
             ("OpenAlex", "https://openalex.org/"), ("NIPE", "https://nipe.eeg.uminho.pt/en/people/"),
@@ -687,7 +714,8 @@ with st.sidebar:
         key="workspace_page", label_visibility="collapsed", on_change=clear_profile_route)
     st.divider()
     st.caption(f"{len(people)} researcher identities · {len(organizations)} organizations")
-    st.caption("Current affiliation attribution\n\n" + ("Public read-only snapshot" if PUBLIC_MODE else "Private local workspace"))
+    st.caption("Current affiliation attribution\n\n" + ("Private read-only snapshot" if PUBLIC_MODE and SHOW_AIS else
+        "Public read-only snapshot" if PUBLIC_MODE else "Private local workspace"))
 
 {"Compare":comparison_page,"Researchers":researcher_page,"Memberships":memberships_page,
  "Collect & import":collect_page,"Journals":journals_page,"Methodology & sources":methodology_page}[page]()

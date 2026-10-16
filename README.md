@@ -15,6 +15,13 @@ The published snapshot excludes AIS, ABS and ABDC observations and derived score
 raw provider responses, maintenance notes, credentials and collection history.
 Maintenance takes place separately; this service cannot change the catalog.
 
+For private use, the hosted app can load a snapshot-bound AIS supplement from the
+ECON_RANKINGS_PRIVATE_AIS Streamlit secret. Restrict app sharing to specific people
+before configuring this supplement. It restores full and fractional AIS in the
+summaries, publication tables, comparisons, charts and downloads; the committed
+database stays unchanged. Never commit the supplement or a secrets.toml file.
+ABS and ABDC grades remain outside the hosted edition.
+
 ## Run
 
 Install requirements.txt, then run `streamlit run public_app.py`.

@@ -17,13 +17,14 @@ PUBLIC_FIELDS = ("publication_id", "title", "doi", "journal_title", "journal_id"
 PUBLIC_METRICS = ["publications", "repec.recurse.all"]
 
 
-def public_export(value):
+def public_export(value, *, include_ais=False):
     """Keep withheld metric placeholders out of public JSON downloads."""
     if isinstance(value, dict):
-        return {key: public_export(item) for key, item in value.items()
-            if not {"ais", "abs", "abdc"}.intersection(key.lower().split("_"))}
+        withheld = {"abs", "abdc"} | (set() if include_ais else {"ais"})
+        return {key: public_export(item, include_ais=include_ais) for key, item in value.items()
+            if not withheld.intersection(key.lower().split("_"))}
     if isinstance(value, list):
-        return [public_export(item) for item in value]
+        return [public_export(item, include_ais=include_ais) for item in value]
     return value
 
 
