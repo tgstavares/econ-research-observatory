@@ -1,9 +1,9 @@
 {
   "version": 1,
-  "published_on": "2026-10-16",
+  "published_on": "2026-10-17",
   "ranking_date": "2026-10-14",
   "ranking_sha256": "f05fe1cd193d0484e18b2c718f67a86d535b9d6328e4996c8d00e0112956a95f",
-  "database_sha256": "a53dbcc4406fcd08763ced327d6091d137c0485c3730e8c9fae9910d7b61b7f8",
+  "database_sha256": "fc5930a8ef3d4793af6ba4031725e120dc44aa6536795e711e01e9be921fe5b8",
   "metrics": [
     "publications",
     "repec.recurse.all"
@@ -13,8 +13,8 @@
     "abs.rating",
     "abdc.rating"
   ],
-  "researchers": 143,
-  "assessments": 116,
+  "researchers": 510,
+  "assessments": 413,
   "read_only": true,
   "attribution": "current_members_carry_selected_publication_portfolio"
 }

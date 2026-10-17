@@ -15,7 +15,7 @@ COMPARISON_METRICS = {
 GROUP_COLORS = ("#17666E", "#C47632", "#7761A7", "#4276B1", "#55845B", "#B45870")
 
 
-def annual_group_output(comparisons, metric, names):
+def annual_group_output(comparisons, metric, names, *, per_member=False):
     """Align group series to a common year span, retaining missing scores."""
     years = [p["publication_year"] for c in comparisons.values() for p in c["publications"]
              if p["publication_year"] is not None]
@@ -29,7 +29,8 @@ def annual_group_output(comparisons, metric, names):
     rows = []
     for group_id, comparison in comparisons.items():
         aligned = dict(comparison, policy=dict(comparison["policy"], from_year=first, to_year=last))
-        rows.extend(dict(row, group=names[group_id]) for row in annual_output(aligned, metric))
+        rows.extend(dict(row, group=names[group_id])
+            for row in annual_output(aligned, metric, per_member=per_member))
     return rows
 
 
@@ -39,10 +40,13 @@ def group_color_encoding(groups, colors):
         "legend":{"orient":"bottom", "title":"", "symbolType":"stroke"}}
 
 
-def annual_output(comparison, metric):
+def annual_output(comparison, metric, *, per_member=False):
     """Use canonical institution papers; retain empty years and unknown scores."""
     field = COMPARISON_METRICS[metric]["publication"]
     if not comparison["summary"]["assessed_members"]:
+        return []
+    members = comparison["summary"]["members"] if per_member else None
+    if per_member and not members:
         return []
     grouped = defaultdict(list)
     for paper in comparison["publications"]:
@@ -60,11 +64,15 @@ def annual_output(comparison, metric):
         values = [1 if field is None else paper[field] for paper in papers]
         known = [value for value in values if value is not None]
         value = fsum(known) if known else (None if papers else 0.0)
+        if per_member and value is not None:
+            value /= members
         # Separate paths prevent a line from connecting across unknown years.
         if value is None:
             segment += 1
         rows.append(dict(year=year, value=value, papers=len(papers),
             scored_papers=len(known), segment=segment))
+        if per_member:
+            rows[-1]["members"] = members
     return rows
 
 
@@ -93,23 +101,27 @@ def lorenz_curve(comparison, metric):
     return result
 
 
-def annual_spec(rows, metric, *, groups=None, colors=None):
+def annual_spec(rows, metric, *, groups=None, colors=None, per_member=False):
+    label = metric + ("/member" if per_member else "")
     spec = {
         "height":260, "data":{"values":rows},
         "mark":{"type":"line", "point":{"filled":True,"size":35}, "color":"#17666E"},
         "encoding":{
             "x":{"field":"year", "type":"quantitative", "title":"Publication year",
                 "scale":{"zero":False}, "axis":{"format":"d", "tickMinStep":1, "tickCount":5}},
-            "y":{"field":"value", "type":"quantitative", "title":metric, "scale":{"zero":True}},
+            "y":{"field":"value", "type":"quantitative", "title":label, "scale":{"zero":True}},
             "detail":{"field":"segment", "type":"nominal"},
             "order":{"field":"year", "type":"quantitative"},
             "tooltip":[{"field":"year", "type":"quantitative", "title":"Year", "format":"d"},
-                {"field":"value", "type":"quantitative", "title":metric,
-                    "format":",.0f" if metric == "Publications" else ",.3f"},
+                {"field":"value", "type":"quantitative", "title":label,
+                    "format":",.0f" if metric == "Publications" and not per_member else ",.3f"},
                 {"field":"scored_papers", "type":"quantitative", "title":"Papers with this metric"},
                 {"field":"papers", "type":"quantitative", "title":"Included papers"}],
         }, "config":{"view":{"stroke":None}},
     }
+    if per_member:
+        spec["encoding"]["tooltip"].append(
+            {"field":"members", "type":"quantitative", "title":"Selected current members", "format":"d"})
     if groups:
         colors = colors or {group:GROUP_COLORS[i % len(GROUP_COLORS)] for i,group in enumerate(groups)}
         spec["mark"].pop("color")

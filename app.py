@@ -28,7 +28,7 @@ if not PUBLIC_MODE:
     from researcher_output.workflows import run_and_import, review_publication
 
 st.set_page_config(page_title="Economics & Finance · Researcher Observatory", page_icon="◈", layout="wide")
-st.html("""<style>.block-container{padding-top:2.6rem;max-width:1440px}h1{letter-spacing:-.035em}
+st.html("""<style>.block-container{padding-top:2.6rem;max-width:1200px;width:100%;margin-inline:auto}h1{letter-spacing:-.035em}
 [data-testid="stMetric"]{padding:10px 14px;background:#fff;border:1px solid #dce5df;border-radius:10px}
 [data-testid="stMetricValue"]{font-size:1.85rem;line-height:1.15}
 [data-testid="stMetricLabel"] p{font-size:.875rem;line-height:1.25;margin:0}
@@ -299,19 +299,27 @@ def comparison_page():
             help="Open this researcher's record in a new tab."),
             "Papers":st.column_config.NumberColumn(format="%d"),
             "Fractional":st.column_config.NumberColumn(format="%.3f", help="Sum of 1 / author count for this researcher's included papers."),
+            "Supplements":st.column_config.TextColumn(width=240,
+                help="Status of supplementary publication sources. Full details appear in the researcher's record."),
             **{c:st.column_config.NumberColumn(format="%.3f") for c in ("Sum IF","Fractional IF","Sum AIS","Fractional AIS")}})
+    annual_per_member = st.radio("Annual output scale", ["Total", "Per member"], horizontal=True,
+        key="annual_output_scale", help="Per member divides each group's annual output by all selected current members, using the same membership count for every year.") == "Per member"
     trend, concentration = st.columns(2)
     group_names = [org_names[i] for i in organization_ids]
     colors = {org_names[i]:GROUP_COLORS[index % len(GROUP_COLORS)] for index, i in enumerate(current_organization_ids())}
     with trend:
-        st.markdown(f"**Annual output · {sort_by}**")
-        annual = annual_group_output(comparisons, sort_by, org_names)
+        annual_label = sort_by + ("/member" if annual_per_member else "")
+        st.markdown(f"**Annual output · {annual_label}**")
+        annual = annual_group_output(comparisons, sort_by, org_names, per_member=annual_per_member)
         if annual:
             plotted = [name for name in group_names if any(row["group"] == name for row in annual)]
-            st.vega_lite_chart(spec=annual_spec(annual, sort_by, groups=plotted, colors=colors), width="stretch")
+            st.vega_lite_chart(spec=annual_spec(annual, sort_by, groups=plotted, colors=colors,
+                per_member=annual_per_member), width="stretch")
         else:
             st.info("No dated publication records are available for an annual series.")
-        st.caption("Institution totals by publication year, with shared papers counted once within each group. "
+        st.caption(("Annual output divided by each group's selected current members, including members without collected records. "
+            "The same denominator applies to every year; shared papers count once within each group. " if annual_per_member else
+            "Institution totals by publication year, with shared papers counted once within each group. ") +
             "Fixed journal scores and current membership apply throughout; the latest year may be incomplete.")
     with concentration:
         st.markdown(f"**Concentration · {sort_by}**")
@@ -365,6 +373,7 @@ def comparison_page():
             "The journal IF uses its full available RePEc publication history; the publication-year controls select the researcher's papers. "
             "All selected publications count toward every current membership, including papers published before joining. "
             "Groups can overlap and their totals should not be added without deduplicating papers. "
+            "Editorials, prefaces and special-issue introductions are excluded from publication totals and scores. "
             "Membership in a research center does not by itself establish employment at its host university.")
         st.write("Only assessments using the same journal snapshot, bibliographic year policy and unrestricted collection period "
             "enter this comparison. Public discovery may omit papers even when requests completed successfully. "
@@ -671,6 +680,8 @@ def methodology_page():
         "from the fixed snapshot of 14 October 2026. The publication-year filters select papers; they do not change "
         "the journal factor's horizon. The saved Economics/Finance classification and reviewed journal identities "
         "determine which journal articles enter the portfolio.")
+    st.write("Editorials, prefaces and special-issue introductions are excluded from publication counts and all derived scores. "
+        "The source records and the reasons for exclusion remain available in researcher profiles.")
     st.write("ORCID is the primary publication source. Crossref and OpenAlex supplement and enrich its public records; "
         "verified institutional additions are labelled separately. Public records may be incomplete. "
         "Missing records, journal factors and author counts remain missing, with coverage shown alongside scores. "

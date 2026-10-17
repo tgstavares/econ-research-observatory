@@ -4,7 +4,7 @@ from collections import Counter
 
 def comparison_researchers(comparisons, names):
     """List each person once without adding their scores across affiliations."""
-    policy_fields = ("from_year", "to_year", "year_policy", "ranking_sha256", "metric", "horizon")
+    policy_fields = ("from_year", "to_year", "year_policy", "ranking_sha256", "metric", "horizon", "editorial_material")
     policies = {tuple(c["policy"].get(k) for k in policy_fields) for c in comparisons.values()}
     if len(policies) > 1:
         raise ValueError("Groups must use the same publication years, journal snapshot and scoring policy.")

@@ -33,8 +33,16 @@ def private_ais_payload(source, snapshot, *, rankings_sha):
             if identifier in values and values[identifier] != value:
                 raise ValueError("Conflicting AIS observations for a publication; review before deployment.")
             values[identifier] = value
+    # A verified score in one author's record must not fill an unresolved journal
+    # match in another author's record, even when they share a publication ID.
+    missing = {}
+    for assessment_id, row in assessments.items():
+        identifiers = [p["publication_id"] for p in json.loads(row["bundle_json"])["publications"]
+            if p.get("ais") is None and p["publication_id"] in values]
+        if identifiers:
+            missing[assessment_id] = identifiers
     return dict(version=1, snapshot_sha256=hashlib.sha256(Path(snapshot).read_bytes()).hexdigest(),
-        ais_by_publication=values)
+        ais_by_publication=values, ais_missing_by_assessment=missing)
 
 
 class PrivateAisCatalog(PublishedCatalog):
@@ -48,6 +56,15 @@ class PrivateAisCatalog(PublishedCatalog):
                 isinstance(value, bool) or not isinstance(value, (int, float)) or
                 not math.isfinite(value) or value < 0 for identifier, value in values.items()):
             raise ValueError("Private AIS observations must contain finite, non-negative scores.")
+        missing = payload.get("ais_missing_by_assessment", {})
+        if not isinstance(missing, dict) or any(not isinstance(assessment_id, str)
+                or not isinstance(identifiers, list) or any(not isinstance(p, str) for p in identifiers)
+                for assessment_id, identifiers in missing.items()):
+            raise ValueError("Private AIS missing records must identify assessments and publications.")
+        missing_records = {(assessment_id, identifier) for assessment_id, identifiers in missing.items()
+            for identifier in identifiers}
+        def score(assessment_id, identifier):
+            return None if (assessment_id, identifier) in missing_records else values.get(identifier)
         self._temporary = tempfile.TemporaryDirectory(prefix="econ-private-ais-")
         path = Path(self._temporary.name) / "catalog.sqlite"
         try:
@@ -56,20 +73,22 @@ class PrivateAisCatalog(PublishedCatalog):
                 rows = connection.execute("SELECT assessment_id,work_id,publication_json FROM person_works").fetchall()
                 updates = []
                 identifiers = set()
+                records = set()
                 for assessment_id, work_id, encoded in rows:
                     publication = json.loads(encoded)
                     identifier = publication["publication_id"]
                     identifiers.add(identifier)
-                    publication["ais"] = values.get(identifier)
+                    records.add((assessment_id, identifier))
+                    publication["ais"] = score(assessment_id, identifier)
                     updates.append((publication["ais"], encode(publication), assessment_id, work_id))
-                if set(values) - identifiers:
+                if set(values) - identifiers or missing_records - records:
                     raise ValueError("Private AIS observations contain publications absent from this snapshot.")
                 connection.executemany("UPDATE person_works SET ais=?,publication_json=? WHERE assessment_id=? AND work_id=?", updates)
                 updates = []
                 for assessment_id, encoded in connection.execute("SELECT assessment_id,bundle_json FROM assessments").fetchall():
                     bundle = json.loads(encoded)
                     for publication in bundle["publications"]:
-                        publication["ais"] = values.get(publication["publication_id"])
+                        publication["ais"] = score(assessment_id, publication["publication_id"])
                     bundle["summary"] = summarize(bundle["publications"])
                     bundle["policy"]["published_metrics"] = ["publications", "repec.recurse.all", "jcr.ais"]
                     updates.append((encode(bundle), assessment_id))

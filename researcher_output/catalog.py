@@ -14,7 +14,7 @@ import sqlite3
 import tempfile
 import uuid
 
-from .core import normalize_doi, normalize_orcid, key, REPEC_SCORE_METRIC, REPEC_SCORE_HORIZON, uses_current_repec_policy
+from .core import normalize_doi, normalize_orcid, key, REPEC_SCORE_METRIC, REPEC_SCORE_HORIZON, uses_current_repec_policy, is_editorial_material
 from .coverage import publication_coverage, publication_source_policy
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -96,19 +96,20 @@ class ResearcherCatalog:
         connection.execute("INSERT INTO audit_events VALUES (?,?,?,?)", (str(uuid.uuid4()), now(), action, encode(details)))
 
     @staticmethod
-    def _person(connection, name, orcid=None, profile_url=None, source_identity=None):
+    def _person(connection, name, orcid=None, profile_url=None, source_identity=None, linked_identities=()):
         orcid = normalize_orcid(orcid) if orcid else None
         by_id = connection.execute("SELECT researcher_id FROM people WHERE orcid=?", (orcid,)).fetchone() if orcid else None
         by_url = connection.execute("SELECT researcher_id,orcid FROM people WHERE profile_url=?", (profile_url,)).fetchone() if profile_url else None
-        by_source = connection.execute("""SELECT p.researcher_id,p.orcid FROM people p
-            JOIN person_identifiers i USING(researcher_id) WHERE i.scheme=? AND i.value=?""", source_identity).fetchone() if source_identity else None
-        if len({row[0] for row in (by_id, by_url, by_source) if row}) > 1:
+        sources = ([source_identity] if source_identity else []) + list(linked_identities)
+        by_sources = [row for identity in sources if (row := connection.execute("""SELECT p.researcher_id,p.orcid FROM people p
+            JOIN person_identifiers i USING(researcher_id) WHERE i.scheme=? AND i.value=?""", identity).fetchone())]
+        if len({row[0] for row in (by_id, by_url, *by_sources) if row}) > 1:
             raise ValueError("This ORCID and profile belong to different catalog identities; review them before merging.")
         if by_url and by_url[1] and orcid and by_url[1] != orcid:
             raise ValueError("The official profile has conflicting ORCID claims; identity needs review.")
-        if by_source and by_source[1] and orcid and by_source[1] != orcid:
+        if any(row[1] and orcid and row[1] != orcid for row in by_sources):
             raise ValueError("The directory entry has a conflicting ORCID; identity needs review.")
-        row = by_id or by_url or by_source
+        row = by_id or by_url or next(iter(by_sources), None)
         source_seed = encode(source_identity) if source_identity else None
         researcher_id = row[0] if row else stable_id("person:" + (orcid or profile_url or source_seed or str(uuid.uuid4())))
         connection.execute("""INSERT INTO people VALUES (?,?,?,?,?) ON CONFLICT(researcher_id) DO UPDATE SET
@@ -183,8 +184,12 @@ class ResearcherCatalog:
                     org["organization_id"], org["name"], org["short_name"], org["kind"], org["url"], org["parent_id"], encode(org["identifiers"])))
             for person in bundle["people"]:
                 source_identity = (scheme, person["source_key"]) if person.get("source_key") else None
+                identity_links = person.get("identity_links", [])
                 try:
-                    researcher_id = self._person(connection, person["name"], person.get("orcid"), person.get("profile_url"), source_identity)
+                    if any(not link.get("method") or not link.get("source_urls") for link in identity_links):
+                        raise ValueError("Cross-directory identity links require a review method and supporting sources.")
+                    researcher_id = self._person(connection, person["name"], person.get("orcid"), person.get("profile_url"),
+                        source_identity, [(link["scheme"], link["value"]) for link in identity_links])
                 except ValueError as error:
                     self.audit(connection, "roster_identity_conflict", dict(profile_url=person.get("profile_url"),
                         provider=provider, source_key=person.get("source_key"),
@@ -197,6 +202,8 @@ class ResearcherCatalog:
                     homepages=person.get("homepages", []), additional_roles=person.get("additional_roles", []),
                     source_entries=person.get("source_entries", []),
                     research_lines=person.get("research_lines", []), warnings=person.get("warnings", []))
+                if identity_links:
+                    evidence["identity_links"] = identity_links
                 if source_identity:
                     connection.execute("INSERT OR IGNORE INTO person_identifiers VALUES (?,?,?,?)",
                         (researcher_id, *source_identity, encode(evidence)))
@@ -209,7 +216,9 @@ class ResearcherCatalog:
                 connection.execute("INSERT OR IGNORE INTO affiliations VALUES (?,?,?,?,?,?,?,?)", (
                     identifier, researcher_id, bundle["organization"]["organization_id"], person["membership_type"],
                     "listed", bundle["as_of"], f"Listed on {organization['short_name']}'s official directory; not yet individually reviewed.", encode(evidence)))
-                for item in person.get("identifiers", []):
+                # Reviewed links are also retained when the other directory is
+                # imported later, so a fresh catalog does not depend on roster order.
+                for item in person.get("identifiers", []) + identity_links:
                     if item["scheme"] == "orcid" and item["value"] != person.get("orcid"):
                         continue
                     existing = connection.execute("SELECT researcher_id FROM person_identifiers WHERE scheme=? AND value=?",
@@ -230,6 +239,9 @@ class ResearcherCatalog:
             return []
         if not all(uses_current_repec_policy(bundle) for bundle, _ in assessments):
             raise ValueError("Regenerate this assessment with the current recursive-IF scoring policy before importing.")
+        if any(p['state'] == 'included' and p['reason'] != 'manual_override' and is_editorial_material(p)
+                for bundle, _ in assessments for p in bundle['publications']):
+            raise ValueError('Recalculate this assessment with the current editorial-material exclusion policy before importing.')
         with self.transaction() as connection:
             return [self._import_assessment(connection, bundle, path) for bundle, path in assessments]
 
@@ -388,6 +400,7 @@ class ResearcherCatalog:
         return dict(policy=dict(attribution="current_members_carry_selected_publication_portfolio", from_year=from_year,
             to_year=to_year, year_policy=year_policy, ranking_sha256=ranking_sha, metric=REPEC_SCORE_METRIC,
             horizon=REPEC_SCORE_HORIZON, reviewed_only=reviewed_only, membership_types=membership_types,
+            editorial_material='excluded',
             scope_sources=["jcr", "abs", "abdc", "reviewed_publisher_classification"],
             per_member_denominator="all_selected_current_members",
             publication_sources=publication_source_policy()),

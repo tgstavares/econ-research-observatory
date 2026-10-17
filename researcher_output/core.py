@@ -3,21 +3,24 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field, asdict
 import datetime as dt
+from functools import lru_cache
 from html import unescape
 from html.parser import HTMLParser
 import hashlib
 import json
 from math import fsum
+from pathlib import Path
 import re
 import sqlite3
 import unicodedata
-from urllib.parse import unquote
+from urllib.parse import unquote, urlparse
 import uuid
 
 NAMESPACE = uuid.UUID("cdd89763-7e2b-49d5-9231-3669dafb6465")
 ARTICLE_TYPES = {"journal-article", "article", "review"}
 REPEC_SCORE_METRIC = "repec.recurse"
 REPEC_SCORE_HORIZON = "all"
+EDITORIAL_REVIEWS = Path(__file__).resolve().parents[1] / 'data/publication_reviews/editorial_dois.json'
 
 
 def repec_summary_policy():
@@ -309,6 +312,37 @@ def validate_overrides(publications, overrides):
     return normalized
 
 
+@lru_cache(maxsize=1)
+def _reviewed_editorial_dois(path, modified_ns):
+    document = json.loads(path.read_text())
+    if document.get('version') != 1:
+        raise ValueError('Unsupported editorial review format.')
+    reviewed = set()
+    for item in document['documents']:
+        doi, url = normalize_doi(item['doi']), urlparse(item['source_url'])
+        if (not doi or doi in reviewed or item['document_type'] != 'editorial'
+                or url.scheme not in {'http', 'https'} or not url.netloc or not item['note'].strip()):
+            raise ValueError('An editorial review requires a unique DOI, publisher source and explanation.')
+        dt.date.fromisoformat(item['reviewed_at'])
+        reviewed.add(doi)
+    return frozenset(reviewed)
+
+
+def is_editorial_material(publication):
+    """Identify editorial subtypes even when a provider uses journal-article."""
+    title = publication['title']
+    reviewed = _reviewed_editorial_dois(EDITORIAL_REVIEWS, EDITORIAL_REVIEWS.stat().st_mtime_ns) if EDITORIAL_REVIEWS.exists() else ()
+    return bool(normalize_doi(publication.get('doi')) in reviewed or publication.get('kind') == 'editorial'
+        or re.match(r"^(?:(?:guest\s+)?editorial|preface|foreword)\b", title, re.I)
+        or re.search(r"\b(?:guest\s+)?editors?(?:['’ʼ`]\s*|\s+)introduction\b", title, re.I)
+        or (re.search(r"\bspecial\s+issue\b", title, re.I) and re.search(r"\bintroduction\b", title, re.I))
+        or any(source.get('kind') == 'editorial' for source in publication.get('sources', [])))
+
+
+def document_type_needs_review(publication):
+    return bool(re.match(r"^(?:erratum|corrigendum|correction|book review)\b", publication['title'], re.I))
+
+
 def assess(publications, catalog, repec_links, *, as_of, from_year=None, to_year=None, year_policy="bibliographic", accept_profile=False, overrides=None):
     overrides = validate_overrides(publications, overrides or {})
     for p in publications:
@@ -321,9 +355,11 @@ def assess(publications, catalog, repec_links, *, as_of, from_year=None, to_year
         if strong and set(p["author_evidence"]) <= {"reviewed_institutional_authorship", "openalex_profile"}:
             p["author_match"] = "reviewed_authorship"
         p["state"], p["reason"] = "included", "journal_article_in_econ_finance"
-        if p["kind"] not in ARTICLE_TYPES:
+        if is_editorial_material(p):
+            p["state"], p["reason"] = "excluded", "editorial_material"
+        elif p["kind"] not in ARTICLE_TYPES:
             p["state"], p["reason"] = "excluded", "non_journal_publication_type"
-        elif re.match(r"^(?:erratum|corrigendum|correction|editorial|book review)\b", p["title"], re.I):
+        elif document_type_needs_review(p):
             p["state"], p["reason"] = "review", "check_document_type"
         elif not strong and not accept_profile:
             p["state"], p["reason"] = "review", "authorship_needs_confirmation"
@@ -343,6 +379,7 @@ def assess(publications, catalog, repec_links, *, as_of, from_year=None, to_year
         if override:
             if "author_count" in override:
                 p["author_count"] = override["author_count"]
+                p["author_count_status"] = "reviewed_override"
             if "include" in override:
                 p["state"] = "included" if override["include"] else "excluded"
                 p["reason"] = "manual_override"
